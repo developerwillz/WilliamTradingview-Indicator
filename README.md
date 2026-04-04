@@ -1,2 +1,2 @@
 # WilliamTradingview-Indicator
-This is a Tradingview Indicator of William, Which clearly shows short-term, long-term, BBI, and Open price and close  price of  high time frame candles in fifteen minute time frames 
+This is a Tradingview Indicator of William, Which clearly shows short-term, long-term trend lines, BBI, and open price and close  price of  high timeframe candles in fifteen minute timeframe.
