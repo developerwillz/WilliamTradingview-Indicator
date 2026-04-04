@@ -1,0 +1,361 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CleverWilliy
+
+//@version=6
+indicator("合并版", overlay=true, max_boxes_count=20, max_lines_count=500, max_labels_count=200)
+
+// =====================================================
+// Inputs
+// =====================================================
+showOnlyTargetTF = input.bool(true, "Only show on 5m / 15m / 1H")
+
+zoneColor        = input.color(color.new(color.gray, 85), "Zone fill color")
+
+vlineColor       = input.color(color.new(color.black, 0), "Divider color")
+vlineWidth       = input.int(1, "Divider width", minval=1, maxval=4)
+keepLines        = input.int(200, "Keep last N dividers", minval=20, maxval=500)
+
+showNextDivider  = input.bool(true, "Show next divider in advance")
+nextLineColor    = input.color(color.new(color.blue, 0), "Next divider color")
+nextLineWidth    = input.int(1, "Next divider width", minval=1, maxval=4)
+nextLineStyleStr = input.string("Dashed", "Next divider style", options=["Solid", "Dashed", "Dotted"])
+
+showPrev4HHL     = input.bool(true, "Show previous 4H High/Low on 15m")
+hlLineColor      = input.color(color.orange, "Prev 4H H/L color")
+hlLineWidth      = input.int(1, "Prev 4H H/L width", minval=1, maxval=4)
+
+// ===== 15m extra: previous Daily High/Low =====
+showPrevDHL      = input.bool(true, "Show previous Daily High/Low on 15m")
+dLineColor       = input.color(color.fuchsia, "Prev Daily H/L color")
+dLineWidth       = input.int(1, "Prev Daily H/L width", minval=1, maxval=4)
+showDLabel       = input.bool(true, "Show D label on previous Daily H/L")
+
+// =====================================================
+// Timeframe filter
+// =====================================================
+is5m  = timeframe.isminutes and timeframe.multiplier == 5
+is15m = timeframe.isminutes and timeframe.multiplier == 15
+is1h  = timeframe.isminutes and timeframe.multiplier == 60
+
+active = (not showOnlyTargetTF) or is5m or is15m or is1h
+
+// 5m  -> 1H
+// 15m -> 4H
+// 1H  -> 1D
+string higherTf = is5m ? "60" : is15m ? "240" : is1h ? "D" : ""
+int barsForward = is5m ? 11 : is15m ? 15 : is1h ? 23 : 0
+
+bool newHTF = active and higherTf != "" and timeframe.change(higherTf)
+
+// =====================================================
+// Confirmed previous HTF data
+// =====================================================
+float prevHTFHigh = na
+float prevHTFLow  = na
+float prevHTFMid  = na
+
+if higherTf != ""
+    prevHTFHigh := request.security(syminfo.tickerid, higherTf, high[1], lookahead=barmerge.lookahead_on)
+    prevHTFLow  := request.security(syminfo.tickerid, higherTf, low[1],  lookahead=barmerge.lookahead_on)
+    prevHTFMid  := (prevHTFHigh + prevHTFLow) / 2.0
+
+// =====================================================
+// 15m 专属：前一日日线高低点
+// =====================================================
+float prevDHigh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+float prevDLow  = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+
+// =====================================================
+// Objects
+// =====================================================
+var box lastBox = na
+var line[] divLines = array.new_line()
+
+var line prev4HHighLine = na
+var line prev4HLowLine  = na
+
+var line nextDividerLine = na
+
+// ===== 15m: previous Daily H/L lines + labels =====
+var line prevDHighLine = na
+var line prevDLowLine  = na
+var label prevDHighLabel = na
+var label prevDLowLabel  = na
+
+lineStyle = nextLineStyleStr == "Solid" ? line.style_solid : nextLineStyleStr == "Dotted" ? line.style_dotted : line.style_dashed
+
+// =====================================================
+// On new higher timeframe
+// =====================================================
+if newHTF and not na(prevHTFMid)
+    float curHTFOpen = open
+    float top = math.max(prevHTFMid, curHTFOpen)
+    float bot = math.min(prevHTFMid, curHTFOpen)
+    int rightX = bar_index + barsForward
+
+    // 删除旧灰区（只保留一个）
+    if not na(lastBox)
+        box.delete(lastBox)
+
+    lastBox := box.new(
+         left=bar_index,
+         right=rightX,
+         top=top,
+         bottom=bot,
+         xloc=xloc.bar_index,
+         bgcolor=zoneColor,
+         border_color=color.new(color.gray, 100))
+
+    // 真实分割线
+    float y1 = low
+    float y2 = high
+    if math.abs(y2 - y1) < syminfo.mintick
+        y1 := low - syminfo.mintick
+        y2 := high + syminfo.mintick
+
+    line ln = line.new(
+         x1=bar_index,
+         y1=y1,
+         x2=bar_index,
+         y2=y2,
+         xloc=xloc.bar_index,
+         extend=extend.both,
+         color=vlineColor,
+         width=vlineWidth)
+    array.push(divLines, ln)
+
+    while array.size(divLines) > keepLines
+        line old = array.shift(divLines)
+        line.delete(old)
+
+    // ===== 15m 专属：画上一根 4H 的最高 / 最低 =====
+    if is15m and showPrev4HHL and not na(prevHTFHigh) and not na(prevHTFLow)
+        if not na(prev4HHighLine)
+            line.delete(prev4HHighLine)
+        if not na(prev4HLowLine)
+            line.delete(prev4HLowLine)
+
+        prev4HHighLine := line.new(
+             x1=bar_index,
+             y1=prevHTFHigh,
+             x2=rightX,
+             y2=prevHTFHigh,
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             color=hlLineColor,
+             width=hlLineWidth)
+
+        prev4HLowLine := line.new(
+             x1=bar_index,
+             y1=prevHTFLow,
+             x2=rightX,
+             y2=prevHTFLow,
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             color=hlLineColor,
+             width=hlLineWidth)
+
+    // ===== 15m 专属：画前一日日线最高 / 最低 + D 标签 =====
+    if is15m and showPrevDHL and not na(prevDHigh) and not na(prevDLow)
+        if not na(prevDHighLine)
+            line.delete(prevDHighLine)
+        if not na(prevDLowLine)
+            line.delete(prevDLowLine)
+        if not na(prevDHighLabel)
+            label.delete(prevDHighLabel)
+        if not na(prevDLowLabel)
+            label.delete(prevDLowLabel)
+
+        prevDHighLine := line.new(
+             x1=bar_index,
+             y1=prevDHigh,
+             x2=rightX,
+             y2=prevDHigh,
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             color=dLineColor,
+             width=dLineWidth)
+
+        prevDLowLine := line.new(
+             x1=bar_index,
+             y1=prevDLow,
+             x2=rightX,
+             y2=prevDLow,
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             color=dLineColor,
+             width=dLineWidth)
+
+        if showDLabel
+            prevDHighLabel := label.new(
+                 x=rightX,
+                 y=prevDHigh,
+                 text="D",
+                 xloc=xloc.bar_index,
+                 style=label.style_label_left,
+                 textcolor=color.white,
+                 color=dLineColor,
+                 size=size.tiny)
+
+            prevDLowLabel := label.new(
+                 x=rightX,
+                 y=prevDLow,
+                 text="D",
+                 xloc=xloc.bar_index,
+                 style=label.style_label_left,
+                 textcolor=color.white,
+                 color=dLineColor,
+                 size=size.tiny)
+
+// =====================================================
+// Hide 15m-only 4H H/L lines when needed
+// =====================================================
+if (not is15m) or (is15m and not showPrev4HHL)
+    if not na(prev4HHighLine)
+        line.delete(prev4HHighLine)
+        prev4HHighLine := na
+    if not na(prev4HLowLine)
+        line.delete(prev4HLowLine)
+        prev4HLowLine := na
+
+// =====================================================
+// Hide 15m-only Daily H/L lines and labels when needed
+// =====================================================
+if (not is15m) or (is15m and not showPrevDHL)
+    if not na(prevDHighLine)
+        line.delete(prevDHighLine)
+        prevDHighLine := na
+    if not na(prevDLowLine)
+        line.delete(prevDLowLine)
+        prevDLowLine := na
+    if not na(prevDHighLabel)
+        label.delete(prevDHighLabel)
+        prevDHighLabel := na
+    if not na(prevDLowLabel)
+        label.delete(prevDLowLabel)
+        prevDLowLabel := na
+
+if is15m and showPrevDHL and not showDLabel
+    if not na(prevDHighLabel)
+        label.delete(prevDHighLabel)
+        prevDHighLabel := na
+    if not na(prevDLowLabel)
+        label.delete(prevDLowLabel)
+        prevDLowLabel := na
+
+// =====================================================
+// Draw next divider in advance
+// =====================================================
+if not active or higherTf == "" or not showNextDivider
+    if not na(nextDividerLine)
+        line.delete(nextDividerLine)
+        nextDividerLine := na
+else
+    int chartTfSec = timeframe.in_seconds()
+    int htfCloseTs = time_close(higherTf)
+    int remainMs   = htfCloseTs - time
+    int barsToNext = chartTfSec > 0 ? int(math.floor(remainMs / (chartTfSec * 1000))) : na
+    int nextX      = na(barsToNext) ? na : bar_index + barsToNext
+
+    float y1f = low
+    float y2f = high
+    if math.abs(y2f - y1f) < syminfo.mintick
+        y1f := low - syminfo.mintick
+        y2f := high + syminfo.mintick
+
+    if not na(nextDividerLine)
+        line.delete(nextDividerLine)
+
+    if not na(nextX)
+        nextDividerLine := line.new(
+             x1=nextX,
+             y1=y1f,
+             x2=nextX,
+             y2=y2f,
+             xloc=xloc.bar_index,
+             extend=extend.both,
+             color=nextLineColor,
+             width=nextLineWidth,
+             style=lineStyle)
+
+//Xuechen 趋势指标
+    
+//==============================
+// 显示开关（仅显示用）
+//==============================
+showShort = input.bool(true,  "显示：雪辰短期趋势（双 EMA10）")
+showBBI   = input.bool(true,  "显示：雪辰多空线（四均线平均）")
+showBBI2  = input.bool(true,  "显示：经典 BBI（3/6/12/24）")
+
+//==============================
+// ❌ 固定参数（不允许修改）
+//==============================
+
+// —— 雪辰多空线参数（固定）——
+M1 = 14
+M2 = 28
+M3 = 57
+M4 = 114
+
+// —— BBI 参数（固定）——
+BBI_1 = 3
+BBI_2 = 6
+BBI_3 = 12
+BBI_4 = 24
+
+//==============================
+// 雪辰短期趋势：EMA(EMA(C,10),10)
+//==============================
+shortTrend = ta.ema(ta.ema(close, 10), 10)
+
+//==============================
+// 雪辰多空线（四均线平均）
+//==============================
+ma1 = ta.sma(close, M1)
+ma2 = ta.sma(close, M2)
+ma3 = ta.sma(close, M3)
+ma4 = ta.sma(close, M4)
+longTrend = (ma1 + ma2 + ma3 + ma4) / 4.0
+
+//==============================
+// 经典 BBI（仅趋势，不含突破）
+//==============================
+bbi1 = ta.sma(close, BBI_1)
+bbi2 = ta.sma(close, BBI_2)
+bbi3 = ta.sma(close, BBI_3)
+bbi4 = ta.sma(close, BBI_4)
+bbi  = (bbi1 + bbi2 + bbi3 + bbi4) / 4.0
+
+// —— BBI 斜率着色（趋势感知，不是信号）——
+slopeUp   = bbi > bbi[1]
+slopeDown = bbi < bbi[1]
+bbiColor  = slopeUp
+     ? color.new(#00e676, 40)
+     : slopeDown
+         ? color.new(#ff5252, 45)
+         : color.new(#787b86, 55)
+
+//==============================
+// 绘制
+//==============================
+plot(
+    showShort ? shortTrend : na,
+    title="雪辰短期趋势（双 EMA10）",
+    color=color.rgb(95, 95, 95),
+    linewidth=1
+)
+
+plot(
+    showBBI ? longTrend : na,
+    title="雪辰多空线（14/28/57/114）",
+    color=color.yellow,
+    linewidth=2
+)
+
+plot(
+    showBBI2 ? bbi : na,
+    title="BBI（3/6/12/24，趋势参考）",
+    color=bbiColor,
+    linewidth=2
+)
+
