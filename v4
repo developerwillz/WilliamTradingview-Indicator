@@ -1,0 +1,588 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CleverWilliy
+
+//@version=6
+indicator("威廉指标", overlay=true, max_boxes_count=20, max_lines_count=500, max_labels_count=200)
+
+// =====================================================
+// Inputs
+// =====================================================
+showOnlyTargetTF = input.bool(true, "Only show main HTF model on 5m / 15m / 1H")
+
+zoneColor        = input.color(color.new(color.gray, 85), "Zone fill color")
+
+vlineColor       = input.color(color.new(color.black, 0), "Divider color")
+vlineWidth       = input.int(1, "Divider width", minval=1, maxval=4)
+keepLines        = input.int(200, "Keep last N dividers", minval=20, maxval=500)
+
+showNextDivider  = input.bool(true, "Show next divider in advance")
+nextLineColor    = input.color(color.new(color.blue, 0), "Next divider color")
+nextLineWidth    = input.int(1, "Next divider width", minval=1, maxval=4)
+nextLineStyleStr = input.string("Dashed", "Next divider style", options=["Solid", "Dashed", "Dotted"])
+
+// ===== 15m: previous 4H high/low =====
+showPrev4HHL     = input.bool(true, "Show previous 4H High/Low on 15m")
+hlLineColor      = input.color(color.orange, "Prev 4H H/L color")
+hlLineWidth      = input.int(1, "Prev 4H H/L width", minval=1, maxval=4)
+
+// ===== Intraday: previous Daily high/low =====
+showPrevDHL      = input.bool(true, "Show previous Daily High/Low on 5m / 15m / 1H / 4H")
+dLineColor       = input.color(color.fuchsia, "Prev Daily H/L color")
+dLineWidth       = input.int(1, "Prev Daily H/L width", minval=1, maxval=4)
+showDLabel       = input.bool(true, "Show D label")
+dLineBars        = input.int(20, "Prev Daily H/L line length (bars)", minval=3, maxval=200)
+
+// ===== Daily chart: previous Week levels =====
+showPrevWHLC     = input.bool(true, "Show previous Week High/Low/Close on Daily")
+wHighLowColor    = input.color(color.aqua, "Prev Week H/L color")
+wCloseColor      = input.color(color.new(color.aqua, 35), "Prev Week Close color")
+wLineWidth       = input.int(1, "Prev Week lines width", minval=1, maxval=4)
+showWLabels      = input.bool(true, "Show Week labels")
+wLineBars        = input.int(15, "Prev Week lines length on Daily (bars)", minval=3, maxval=200)
+
+// ===== Daily chart: previous Month levels =====
+showPrevMHLC     = input.bool(true, "Show previous Month High/Low/Close on Daily")
+mHighLowColor    = input.color(color.lime, "Prev Month H/L color")
+mCloseColor      = input.color(color.new(color.lime, 35), "Prev Month Close color")
+mLineWidth       = input.int(1, "Prev Month lines width", minval=1, maxval=4)
+showMLabels      = input.bool(true, "Show Month labels")
+mLineBars        = input.int(20, "Prev Month lines length on Daily (bars)", minval=3, maxval=250)
+
+// =====================================================
+// Timeframe filter
+// =====================================================
+is5m  = timeframe.isminutes and timeframe.multiplier == 5
+is15m = timeframe.isminutes and timeframe.multiplier == 15
+is1h  = timeframe.isminutes and timeframe.multiplier == 60
+is4h  = timeframe.isminutes and timeframe.multiplier == 240
+isD   = timeframe.isdaily
+
+activeMain = (not showOnlyTargetTF) or is5m or is15m or is1h
+
+// 5m  -> 1H
+// 15m -> 4H
+// 1H  -> 1D
+string higherTf = is5m ? "60" : is15m ? "240" : is1h ? "D" : ""
+int barsForward = is5m ? 11 : is15m ? 15 : is1h ? 23 : 0
+
+bool newHTF = activeMain and higherTf != "" and timeframe.change(higherTf)
+
+// =====================================================
+// Confirmed previous HTF data
+// =====================================================
+float prevHTFHigh = na
+float prevHTFLow  = na
+float prevHTFMid  = na
+
+if higherTf != ""
+    prevHTFHigh := request.security(syminfo.tickerid, higherTf, high[1], lookahead=barmerge.lookahead_on)
+    prevHTFLow  := request.security(syminfo.tickerid, higherTf, low[1],  lookahead=barmerge.lookahead_on)
+    prevHTFMid  := (prevHTFHigh + prevHTFLow) / 2.0
+
+// =====================================================
+// Cross-timeframe reference levels
+// =====================================================
+float prevDHigh = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_on)
+float prevDLow  = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_on)
+
+float prevWHigh = request.security(syminfo.tickerid, "W", high[1],  lookahead=barmerge.lookahead_on)
+float prevWLow  = request.security(syminfo.tickerid, "W", low[1],   lookahead=barmerge.lookahead_on)
+float prevWClose= request.security(syminfo.tickerid, "W", close[1], lookahead=barmerge.lookahead_on)
+
+float prevMHigh = request.security(syminfo.tickerid, "M", high[1],  lookahead=barmerge.lookahead_on)
+float prevMLow  = request.security(syminfo.tickerid, "M", low[1],   lookahead=barmerge.lookahead_on)
+float prevMClose= request.security(syminfo.tickerid, "M", close[1], lookahead=barmerge.lookahead_on)
+
+// =====================================================
+// Objects
+// =====================================================
+var box lastBox = na
+var line[] divLines = array.new_line()
+
+var line prev4HHighLine = na
+var line prev4HLowLine  = na
+
+var line nextDividerLine = na
+
+// Intraday prev D H/L
+var line dHighLine = na
+var line dLowLine  = na
+var label dHighLabel = na
+var label dLowLabel  = na
+
+// Daily prev W H/L/C
+var line wHighLine  = na
+var line wLowLine   = na
+var line wCloseLine = na
+var label wHighLabel  = na
+var label wLowLabel   = na
+var label wCloseLabel = na
+
+// Daily prev M H/L/C
+var line mHighLine  = na
+var line mLowLine   = na
+var line mCloseLine = na
+var label mHighLabel  = na
+var label mLowLabel   = na
+var label mCloseLabel = na
+
+lineStyle = nextLineStyleStr == "Solid" ? line.style_solid : nextLineStyleStr == "Dotted" ? line.style_dotted : line.style_dashed
+
+// =====================================================
+// On new higher timeframe
+// =====================================================
+if newHTF and not na(prevHTFMid)
+    float curHTFOpen = open
+    float top = math.max(prevHTFMid, curHTFOpen)
+    float bot = math.min(prevHTFMid, curHTFOpen)
+    int rightX = bar_index + barsForward
+
+    // Delete old zone (keep only one)
+    if not na(lastBox)
+        box.delete(lastBox)
+
+    lastBox := box.new(
+         left=bar_index,
+         right=rightX,
+         top=top,
+         bottom=bot,
+         xloc=xloc.bar_index,
+         bgcolor=zoneColor,
+         border_color=color.new(color.gray, 100))
+
+    // Real divider line
+    float y1 = low
+    float y2 = high
+    if math.abs(y2 - y1) < syminfo.mintick
+        y1 := low - syminfo.mintick
+        y2 := high + syminfo.mintick
+
+    line ln = line.new(
+         x1=bar_index,
+         y1=y1,
+         x2=bar_index,
+         y2=y2,
+         xloc=xloc.bar_index,
+         extend=extend.both,
+         color=vlineColor,
+         width=vlineWidth)
+    array.push(divLines, ln)
+
+    while array.size(divLines) > keepLines
+        line old = array.shift(divLines)
+        line.delete(old)
+
+    // 15m only: previous 4H high / low
+    if is15m and showPrev4HHL and not na(prevHTFHigh) and not na(prevHTFLow)
+        if not na(prev4HHighLine)
+            line.delete(prev4HHighLine)
+        if not na(prev4HLowLine)
+            line.delete(prev4HLowLine)
+
+        prev4HHighLine := line.new(
+             x1=bar_index,
+             y1=prevHTFHigh,
+             x2=rightX,
+             y2=prevHTFHigh,
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             color=hlLineColor,
+             width=hlLineWidth)
+
+        prev4HLowLine := line.new(
+             x1=bar_index,
+             y1=prevHTFLow,
+             x2=rightX,
+             y2=prevHTFLow,
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             color=hlLineColor,
+             width=hlLineWidth)
+
+// =====================================================
+// Hide 15m-only 4H H/L lines when needed
+// =====================================================
+if (not is15m) or (is15m and not showPrev4HHL)
+    if not na(prev4HHighLine)
+        line.delete(prev4HHighLine)
+        prev4HHighLine := na
+    if not na(prev4HLowLine)
+        line.delete(prev4HLowLine)
+        prev4HLowLine := na
+
+// =====================================================
+// Intraday charts: previous Daily High / Low
+// Show on 5m / 15m / 1H / 4H
+// =====================================================
+bool showDOnThisTf = showPrevDHL and (is5m or is15m or is1h or is4h)
+
+if showDOnThisTf and not na(prevDHigh) and not na(prevDLow)
+    int dRightX = bar_index + dLineBars
+
+    if na(dHighLine)
+        dHighLine := line.new(bar_index, prevDHigh, dRightX, prevDHigh, xloc=xloc.bar_index, extend=extend.none, color=dLineColor, width=dLineWidth)
+    else
+        line.set_xy1(dHighLine, bar_index, prevDHigh)
+        line.set_xy2(dHighLine, dRightX, prevDHigh)
+        line.set_color(dHighLine, dLineColor)
+        line.set_width(dHighLine, dLineWidth)
+
+    if na(dLowLine)
+        dLowLine := line.new(bar_index, prevDLow, dRightX, prevDLow, xloc=xloc.bar_index, extend=extend.none, color=dLineColor, width=dLineWidth)
+    else
+        line.set_xy1(dLowLine, bar_index, prevDLow)
+        line.set_xy2(dLowLine, dRightX, prevDLow)
+        line.set_color(dLowLine, dLineColor)
+        line.set_width(dLowLine, dLineWidth)
+
+    if showDLabel
+        if na(dHighLabel)
+            dHighLabel := label.new(dRightX, prevDHigh, "D", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=dLineColor, size=size.tiny)
+        else
+            label.set_x(dHighLabel, dRightX)
+            label.set_y(dHighLabel, prevDHigh)
+            label.set_text(dHighLabel, "D")
+            label.set_textcolor(dHighLabel, color.white)
+            label.set_color(dHighLabel, dLineColor)
+            label.set_size(dHighLabel, size.tiny)
+            label.set_style(dHighLabel, label.style_label_left)
+
+        if na(dLowLabel)
+            dLowLabel := label.new(dRightX, prevDLow, "D", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=dLineColor, size=size.tiny)
+        else
+            label.set_x(dLowLabel, dRightX)
+            label.set_y(dLowLabel, prevDLow)
+            label.set_text(dLowLabel, "D")
+            label.set_textcolor(dLowLabel, color.white)
+            label.set_color(dLowLabel, dLineColor)
+            label.set_size(dLowLabel, size.tiny)
+            label.set_style(dLowLabel, label.style_label_left)
+    else
+        if not na(dHighLabel)
+            label.delete(dHighLabel)
+            dHighLabel := na
+        if not na(dLowLabel)
+            label.delete(dLowLabel)
+            dLowLabel := na
+else
+    if not na(dHighLine)
+        line.delete(dHighLine)
+        dHighLine := na
+    if not na(dLowLine)
+        line.delete(dLowLine)
+        dLowLine := na
+    if not na(dHighLabel)
+        label.delete(dHighLabel)
+        dHighLabel := na
+    if not na(dLowLabel)
+        label.delete(dLowLabel)
+        dLowLabel := na
+
+// =====================================================
+// Daily chart: previous Week High / Low / Close
+// =====================================================
+if isD and showPrevWHLC and not na(prevWHigh) and not na(prevWLow) and not na(prevWClose)
+    int wRightX = bar_index + wLineBars
+
+    if na(wHighLine)
+        wHighLine := line.new(bar_index, prevWHigh, wRightX, prevWHigh, xloc=xloc.bar_index, extend=extend.none, color=wHighLowColor, width=wLineWidth)
+    else
+        line.set_xy1(wHighLine, bar_index, prevWHigh)
+        line.set_xy2(wHighLine, wRightX, prevWHigh)
+        line.set_color(wHighLine, wHighLowColor)
+        line.set_width(wHighLine, wLineWidth)
+        line.set_style(wHighLine, line.style_solid)
+
+    if na(wLowLine)
+        wLowLine := line.new(bar_index, prevWLow, wRightX, prevWLow, xloc=xloc.bar_index, extend=extend.none, color=wHighLowColor, width=wLineWidth)
+    else
+        line.set_xy1(wLowLine, bar_index, prevWLow)
+        line.set_xy2(wLowLine, wRightX, prevWLow)
+        line.set_color(wLowLine, wHighLowColor)
+        line.set_width(wLowLine, wLineWidth)
+        line.set_style(wLowLine, line.style_solid)
+
+    if na(wCloseLine)
+        wCloseLine := line.new(bar_index, prevWClose, wRightX, prevWClose, xloc=xloc.bar_index, extend=extend.none, color=wCloseColor, width=wLineWidth, style=line.style_dotted)
+    else
+        line.set_xy1(wCloseLine, bar_index, prevWClose)
+        line.set_xy2(wCloseLine, wRightX, prevWClose)
+        line.set_color(wCloseLine, wCloseColor)
+        line.set_width(wCloseLine, wLineWidth)
+        line.set_style(wCloseLine, line.style_dotted)
+
+    if showWLabels
+        if na(wHighLabel)
+            wHighLabel := label.new(wRightX, prevWHigh, "WH", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=wHighLowColor, size=size.tiny)
+        else
+            label.set_x(wHighLabel, wRightX)
+            label.set_y(wHighLabel, prevWHigh)
+            label.set_text(wHighLabel, "WH")
+            label.set_textcolor(wHighLabel, color.white)
+            label.set_color(wHighLabel, wHighLowColor)
+            label.set_style(wHighLabel, label.style_label_left)
+            label.set_size(wHighLabel, size.tiny)
+
+        if na(wLowLabel)
+            wLowLabel := label.new(wRightX, prevWLow, "WL", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=wHighLowColor, size=size.tiny)
+        else
+            label.set_x(wLowLabel, wRightX)
+            label.set_y(wLowLabel, prevWLow)
+            label.set_text(wLowLabel, "WL")
+            label.set_textcolor(wLowLabel, color.white)
+            label.set_color(wLowLabel, wHighLowColor)
+            label.set_style(wLowLabel, label.style_label_left)
+            label.set_size(wLowLabel, size.tiny)
+
+        if na(wCloseLabel)
+            wCloseLabel := label.new(wRightX, prevWClose, "WC", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=wCloseColor, size=size.tiny)
+        else
+            label.set_x(wCloseLabel, wRightX)
+            label.set_y(wCloseLabel, prevWClose)
+            label.set_text(wCloseLabel, "WC")
+            label.set_textcolor(wCloseLabel, color.white)
+            label.set_color(wCloseLabel, wCloseColor)
+            label.set_style(wCloseLabel, label.style_label_left)
+            label.set_size(wCloseLabel, size.tiny)
+    else
+        if not na(wHighLabel)
+            label.delete(wHighLabel)
+            wHighLabel := na
+        if not na(wLowLabel)
+            label.delete(wLowLabel)
+            wLowLabel := na
+        if not na(wCloseLabel)
+            label.delete(wCloseLabel)
+            wCloseLabel := na
+else
+    if not na(wHighLine)
+        line.delete(wHighLine)
+        wHighLine := na
+    if not na(wLowLine)
+        line.delete(wLowLine)
+        wLowLine := na
+    if not na(wCloseLine)
+        line.delete(wCloseLine)
+        wCloseLine := na
+    if not na(wHighLabel)
+        label.delete(wHighLabel)
+        wHighLabel := na
+    if not na(wLowLabel)
+        label.delete(wLowLabel)
+        wLowLabel := na
+    if not na(wCloseLabel)
+        label.delete(wCloseLabel)
+        wCloseLabel := na
+
+// =====================================================
+// Daily chart: previous Month High / Low / Close
+// =====================================================
+if isD and showPrevMHLC and not na(prevMHigh) and not na(prevMLow) and not na(prevMClose)
+    int mRightX = bar_index + mLineBars
+
+    if na(mHighLine)
+        mHighLine := line.new(bar_index, prevMHigh, mRightX, prevMHigh, xloc=xloc.bar_index, extend=extend.none, color=mHighLowColor, width=mLineWidth)
+    else
+        line.set_xy1(mHighLine, bar_index, prevMHigh)
+        line.set_xy2(mHighLine, mRightX, prevMHigh)
+        line.set_color(mHighLine, mHighLowColor)
+        line.set_width(mHighLine, mLineWidth)
+        line.set_style(mHighLine, line.style_solid)
+
+    if na(mLowLine)
+        mLowLine := line.new(bar_index, prevMLow, mRightX, prevMLow, xloc=xloc.bar_index, extend=extend.none, color=mHighLowColor, width=mLineWidth)
+    else
+        line.set_xy1(mLowLine, bar_index, prevMLow)
+        line.set_xy2(mLowLine, mRightX, prevMLow)
+        line.set_color(mLowLine, mHighLowColor)
+        line.set_width(mLowLine, mLineWidth)
+        line.set_style(mLowLine, line.style_solid)
+
+    if na(mCloseLine)
+        mCloseLine := line.new(bar_index, prevMClose, mRightX, prevMClose, xloc=xloc.bar_index, extend=extend.none, color=mCloseColor, width=mLineWidth, style=line.style_dotted)
+    else
+        line.set_xy1(mCloseLine, bar_index, prevMClose)
+        line.set_xy2(mCloseLine, mRightX, prevMClose)
+        line.set_color(mCloseLine, mCloseColor)
+        line.set_width(mCloseLine, mLineWidth)
+        line.set_style(mCloseLine, line.style_dotted)
+
+    if showMLabels
+        if na(mHighLabel)
+            mHighLabel := label.new(mRightX, prevMHigh, "MH", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=mHighLowColor, size=size.tiny)
+        else
+            label.set_x(mHighLabel, mRightX)
+            label.set_y(mHighLabel, prevMHigh)
+            label.set_text(mHighLabel, "MH")
+            label.set_textcolor(mHighLabel, color.white)
+            label.set_color(mHighLabel, mHighLowColor)
+            label.set_style(mHighLabel, label.style_label_left)
+            label.set_size(mHighLabel, size.tiny)
+
+        if na(mLowLabel)
+            mLowLabel := label.new(mRightX, prevMLow, "ML", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=mHighLowColor, size=size.tiny)
+        else
+            label.set_x(mLowLabel, mRightX)
+            label.set_y(mLowLabel, prevMLow)
+            label.set_text(mLowLabel, "ML")
+            label.set_textcolor(mLowLabel, color.white)
+            label.set_color(mLowLabel, mHighLowColor)
+            label.set_style(mLowLabel, label.style_label_left)
+            label.set_size(mLowLabel, size.tiny)
+
+        if na(mCloseLabel)
+            mCloseLabel := label.new(mRightX, prevMClose, "MC", xloc=xloc.bar_index, style=label.style_label_left, textcolor=color.white, color=mCloseColor, size=size.tiny)
+        else
+            label.set_x(mCloseLabel, mRightX)
+            label.set_y(mCloseLabel, prevMClose)
+            label.set_text(mCloseLabel, "MC")
+            label.set_textcolor(mCloseLabel, color.white)
+            label.set_color(mCloseLabel, mCloseColor)
+            label.set_style(mCloseLabel, label.style_label_left)
+            label.set_size(mCloseLabel, size.tiny)
+    else
+        if not na(mHighLabel)
+            label.delete(mHighLabel)
+            mHighLabel := na
+        if not na(mLowLabel)
+            label.delete(mLowLabel)
+            mLowLabel := na
+        if not na(mCloseLabel)
+            label.delete(mCloseLabel)
+            mCloseLabel := na
+else
+    if not na(mHighLine)
+        line.delete(mHighLine)
+        mHighLine := na
+    if not na(mLowLine)
+        line.delete(mLowLine)
+        mLowLine := na
+    if not na(mCloseLine)
+        line.delete(mCloseLine)
+        mCloseLine := na
+    if not na(mHighLabel)
+        label.delete(mHighLabel)
+        mHighLabel := na
+    if not na(mLowLabel)
+        label.delete(mLowLabel)
+        mLowLabel := na
+    if not na(mCloseLabel)
+        label.delete(mCloseLabel)
+        mCloseLabel := na
+
+// =====================================================
+// Draw next divider in advance
+// =====================================================
+if not activeMain or higherTf == "" or not showNextDivider
+    if not na(nextDividerLine)
+        line.delete(nextDividerLine)
+        nextDividerLine := na
+else
+    int chartTfSec = timeframe.in_seconds()
+    int htfCloseTs = time_close(higherTf)
+    int remainMs   = htfCloseTs - time
+    int barsToNext = chartTfSec > 0 ? int(math.floor(remainMs / (chartTfSec * 1000))) : na
+    int nextX      = na(barsToNext) ? na : bar_index + barsToNext
+
+    float y1f = low
+    float y2f = high
+    if math.abs(y2f - y1f) < syminfo.mintick
+        y1f := low - syminfo.mintick
+        y2f := high + syminfo.mintick
+
+    if not na(nextDividerLine)
+        line.delete(nextDividerLine)
+
+    if not na(nextX)
+        nextDividerLine := line.new(
+             x1=nextX,
+             y1=y1f,
+             x2=nextX,
+             y2=y2f,
+             xloc=xloc.bar_index,
+             extend=extend.both,
+             color=nextLineColor,
+             width=nextLineWidth,
+             style=lineStyle)
+
+//Xuechen 趋势指标
+    
+//==============================
+// 显示开关（仅显示用）
+//==============================
+showShort = input.bool(true,  "显示：雪辰短期趋势（双 EMA10）")
+showBBI   = input.bool(true,  "显示：雪辰多空线（四均线平均）")
+showBBI2  = input.bool(true,  "显示：经典 BBI（3/6/12/24）")
+
+//==============================
+// ❌ 固定参数（不允许修改）
+//==============================
+
+// —— 雪辰多空线参数（固定）——
+M1 = 14
+M2 = 28
+M3 = 57
+M4 = 114
+
+// —— BBI 参数（固定）——
+BBI_1 = 3
+BBI_2 = 6
+BBI_3 = 12
+BBI_4 = 24
+
+//==============================
+// 雪辰短期趋势：EMA(EMA(C,10),10)
+//==============================
+shortTrend = ta.ema(ta.ema(close, 10), 10)
+
+//==============================
+// 雪辰多空线（四均线平均）
+//==============================
+ma1 = ta.sma(close, M1)
+ma2 = ta.sma(close, M2)
+ma3 = ta.sma(close, M3)
+ma4 = ta.sma(close, M4)
+longTrend = (ma1 + ma2 + ma3 + ma4) / 4.0
+
+//==============================
+// 经典 BBI（仅趋势，不含突破）
+//==============================
+bbi1 = ta.sma(close, BBI_1)
+bbi2 = ta.sma(close, BBI_2)
+bbi3 = ta.sma(close, BBI_3)
+bbi4 = ta.sma(close, BBI_4)
+bbi  = (bbi1 + bbi2 + bbi3 + bbi4) / 4.0
+
+// —— BBI 斜率着色（趋势感知，不是信号）——
+slopeUp   = bbi > bbi[1]
+slopeDown = bbi < bbi[1]
+bbiColor  = slopeUp
+     ? color.new(#00e676, 40)
+     : slopeDown
+         ? color.new(#ff5252, 45)
+         : color.new(#787b86, 55)
+
+//==============================
+// 绘制
+//==============================
+plot(
+    showShort ? shortTrend : na,
+    title="雪辰短期趋势（双 EMA10）",
+    color=color.rgb(95, 95, 95),
+    linewidth=1
+)
+
+plot(
+    showBBI ? longTrend : na,
+    title="雪辰多空线（14/28/57/114）",
+    color=color.yellow,
+    linewidth=2
+)
+
+plot(
+    showBBI2 ? bbi : na,
+    title="BBI（3/6/12/24，趋势参考）",
+    color=bbiColor,
+    linewidth=2
+)
+
