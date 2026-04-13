@@ -1,0 +1,362 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CleverWilliy
+
+//@version=6
+strategy("5m ORB First Retest - Final Clean Version (NY Time)", overlay=true, initial_capital=100000, pyramiding=0, process_orders_on_close=true)
+
+// =========================
+// Inputs
+// =========================
+showLines       = input.bool(true, "Show range high/low")
+rrMultiple      = input.float(3.0, "Take Profit (R)", minval=0.1, step=0.1)
+beTriggerR      = input.float(2.0, "BE trigger (R)", minval=0.1, step=0.1)
+beLockR         = input.float(0.5, "BE lock profit (R)", minval=0.0, step=0.1)
+useChaseFilter  = input.bool(true, "Use chase filter")
+chaseRatio      = input.float(0.9, "No-chase threshold", minval=0.1, step=0.05)
+tolerancePts    = input.float(5.0, "Respect tolerance (points)", minval=0)
+useMarketEntryOnFailedRetest = input.bool(true, "Use market entry on failed retest when not too far")
+
+// =========================
+// Constants
+// =========================
+nyTZ = "America/New_York"
+is5m = timeframe.isminutes and timeframe.multiplier == 5
+
+// =========================
+// NY time
+// =========================
+nyHour     = hour(time, nyTZ)
+nyMinute   = minute(time, nyTZ)
+nyTotalMin = nyHour * 60 + nyMinute
+
+// 9:30–10:30, including 10:30 bar
+inRangeSession = nyTotalMin >= 570 and nyTotalMin <= 630
+// Start trading from 10:35 to avoid overlap with 10:30 range bar
+inTradeSession = nyTotalMin > 630 and nyTotalMin < 720
+afterNoon      = nyTotalMin >= 720
+
+// =========================
+// NY date change
+// =========================
+nyYear  = year(time, nyTZ)
+nyMonth = month(time, nyTZ)
+nyDay   = dayofmonth(time, nyTZ)
+nyDate  = nyYear * 10000 + nyMonth * 100 + nyDay
+newDay  = ta.change(nyDate) != 0
+
+// =========================
+// State variables
+// =========================
+var float rangeHigh = na
+var float rangeLow  = na
+var bool  rangeReady = false
+
+var bool  breakoutSeen = false
+var int   breakoutDir = 0
+var float breakoutStop = na
+var int   breakoutBarIndex = na
+
+var bool retestDone = false
+var bool setupInvalid = false
+var bool tradeTakenToday = false
+
+var bool pendingReverse = false
+var bool pendingLimitAfterRespect = false
+
+var float reverseEntry = na
+var float reverseStop  = na
+var float reverseTP    = na
+
+// Active trade management for BE
+var float activeLongStop = na
+var float activeLongRisk = na
+var bool  longBETriggered = false
+
+var float activeShortStop = na
+var float activeShortRisk = na
+var bool  shortBETriggered = false
+
+// =========================
+// Daily reset
+// =========================
+if newDay
+    rangeHigh := na
+    rangeLow := na
+    rangeReady := false
+
+    breakoutSeen := false
+    breakoutDir := 0
+    breakoutStop := na
+    breakoutBarIndex := na
+
+    retestDone := false
+    setupInvalid := false
+    tradeTakenToday := false
+
+    pendingReverse := false
+    pendingLimitAfterRespect := false
+
+    reverseEntry := na
+    reverseStop := na
+    reverseTP := na
+
+    activeLongStop := na
+    activeLongRisk := na
+    longBETriggered := false
+
+    activeShortStop := na
+    activeShortRisk := na
+    shortBETriggered := false
+
+    strategy.cancel("LongLimitAfterRespect")
+    strategy.cancel("ShortLimitAfterRespect")
+    strategy.cancel("Short Rev")
+    strategy.cancel("Long Rev")
+
+// =========================
+// Build 9:30–10:30 range
+// =========================
+if is5m and inRangeSession
+    rangeHigh := na(rangeHigh) ? high : math.max(rangeHigh, high)
+    rangeLow  := na(rangeLow)  ? low  : math.min(rangeLow, low)
+
+// Range becomes ready after the range session finishes
+if is5m and not inRangeSession and not na(rangeHigh) and not na(rangeLow)
+    rangeReady := true
+
+// =========================
+// True breakout detection
+// =========================
+longBreak  = is5m and rangeReady and inTradeSession and not breakoutSeen and not tradeTakenToday and close > rangeHigh
+shortBreak = is5m and rangeReady and inTradeSession and not breakoutSeen and not tradeTakenToday and close < rangeLow
+
+if longBreak
+    breakoutSeen := true
+    breakoutDir := 1
+    breakoutStop := low
+    breakoutBarIndex := bar_index
+    retestDone := false
+    setupInvalid := false
+
+if shortBreak
+    breakoutSeen := true
+    breakoutDir := -1
+    breakoutStop := high
+    breakoutBarIndex := bar_index
+    retestDone := false
+    setupInvalid := false
+
+// =========================
+// First retest detection
+// =========================
+longRetest  = is5m and inTradeSession and breakoutSeen and breakoutDir == 1  and not retestDone and not setupInvalid and not tradeTakenToday and bar_index > breakoutBarIndex and low  <= rangeHigh
+shortRetest = is5m and inTradeSession and breakoutSeen and breakoutDir == -1 and not retestDone and not setupInvalid and not tradeTakenToday and bar_index > breakoutBarIndex and high >= rangeLow
+
+// =========================
+// Long side logic after upside breakout
+// =========================
+if longRetest
+    retestDone := true
+
+    longRespectLike = close >= rangeHigh - tolerancePts
+
+    if longRespectLike
+        stopPrice   = breakoutStop
+        movedPct    = math.max(close - rangeHigh, 0) / rangeHigh
+        stopDistPct = (rangeHigh - stopPrice) / rangeHigh
+        tooFar      = useChaseFilter and stopDistPct > 0 and movedPct >= stopDistPct * chaseRatio
+
+        if tooFar
+            entryPrice = rangeHigh
+            risk = entryPrice - stopPrice
+            if risk > 0
+                strategy.entry("LongLimitAfterRespect", strategy.long, limit=entryPrice)
+                activeLongStop := stopPrice
+                activeLongRisk := risk
+                longBETriggered := false
+                pendingLimitAfterRespect := true
+                setupInvalid := true
+                tradeTakenToday := true
+        else
+            entryPrice = close
+            risk = entryPrice - stopPrice
+            if risk > 0
+                strategy.entry("Long", strategy.long)
+                activeLongStop := stopPrice
+                activeLongRisk := risk
+                longBETriggered := false
+                tradeTakenToday := true
+                setupInvalid := true
+
+    else
+        reverseStop := high
+        movedPct    = math.max(rangeHigh - close, 0) / rangeHigh
+        stopDistPct = (reverseStop - rangeHigh) / rangeHigh
+        tooFarRev   = useChaseFilter and stopDistPct > 0 and movedPct >= stopDistPct * chaseRatio
+
+        if useMarketEntryOnFailedRetest and not tooFarRev
+            reverseEntry := close
+            risk = reverseStop - reverseEntry
+            if risk > 0
+                strategy.entry("Short Rev Mkt", strategy.short)
+                activeShortStop := reverseStop
+                activeShortRisk := risk
+                shortBETriggered := false
+                setupInvalid := true
+                tradeTakenToday := true
+        else
+            reverseEntry := rangeHigh
+            risk = reverseStop - reverseEntry
+            if risk > 0
+                strategy.entry("Short Rev", strategy.short, limit=reverseEntry)
+                activeShortStop := reverseStop
+                activeShortRisk := risk
+                shortBETriggered := false
+                pendingReverse := true
+                setupInvalid := true
+                tradeTakenToday := true
+
+// =========================
+// Short side logic after downside breakout
+// =========================
+if shortRetest
+    retestDone := true
+
+    shortRespectLike = close <= rangeLow + tolerancePts
+
+    if shortRespectLike
+        stopPrice   = breakoutStop
+        movedPct    = math.max(rangeLow - close, 0) / rangeLow
+        stopDistPct = (stopPrice - rangeLow) / rangeLow
+        tooFar      = useChaseFilter and stopDistPct > 0 and movedPct >= stopDistPct * chaseRatio
+
+        if tooFar
+            entryPrice = rangeLow
+            risk = stopPrice - entryPrice
+            if risk > 0
+                strategy.entry("ShortLimitAfterRespect", strategy.short, limit=entryPrice)
+                activeShortStop := stopPrice
+                activeShortRisk := risk
+                shortBETriggered := false
+                pendingLimitAfterRespect := true
+                setupInvalid := true
+                tradeTakenToday := true
+        else
+            entryPrice = close
+            risk = stopPrice - entryPrice
+            if risk > 0
+                strategy.entry("Short", strategy.short)
+                activeShortStop := stopPrice
+                activeShortRisk := risk
+                shortBETriggered := false
+                tradeTakenToday := true
+                setupInvalid := true
+
+    else
+        reverseStop := low
+        movedPct    = math.max(close - rangeLow, 0) / rangeLow
+        stopDistPct = (rangeLow - reverseStop) / rangeLow
+        tooFarRev   = useChaseFilter and stopDistPct > 0 and movedPct >= stopDistPct * chaseRatio
+
+        if useMarketEntryOnFailedRetest and not tooFarRev
+            reverseEntry := close
+            risk = reverseEntry - reverseStop
+            if risk > 0
+                strategy.entry("Long Rev Mkt", strategy.long)
+                activeLongStop := reverseStop
+                activeLongRisk := risk
+                longBETriggered := false
+                setupInvalid := true
+                tradeTakenToday := true
+        else
+            reverseEntry := rangeLow
+            risk = reverseEntry - reverseStop
+            if risk > 0
+                strategy.entry("Long Rev", strategy.long, limit=reverseEntry)
+                activeLongStop := reverseStop
+                activeLongRisk := risk
+                longBETriggered := false
+                pendingReverse := true
+                setupInvalid := true
+                tradeTakenToday := true
+
+// =========================
+// Dynamic exits with Break Even
+// =========================
+if strategy.position_size > 0 and not na(activeLongRisk) and not na(activeLongStop)
+    longEntryPrice = strategy.position_avg_price
+    longBEPrice    = longEntryPrice + activeLongRisk * beTriggerR
+    longTPPrice    = longEntryPrice + activeLongRisk * rrMultiple
+    longLockPrice  = longEntryPrice + activeLongRisk * beLockR
+
+    if not longBETriggered and high >= longBEPrice
+        longBETriggered := true
+
+    currentLongStop = longBETriggered ? longLockPrice : activeLongStop
+
+    strategy.exit("Long Exit", from_entry="Long", stop=currentLongStop, limit=longTPPrice)
+    strategy.exit("LongLimitAfterRespect Exit", from_entry="LongLimitAfterRespect", stop=currentLongStop, limit=longTPPrice)
+    strategy.exit("Long Rev Exit", from_entry="Long Rev", stop=currentLongStop, limit=longTPPrice)
+    strategy.exit("Long Rev Mkt Exit", from_entry="Long Rev Mkt", stop=currentLongStop, limit=longTPPrice)
+
+if strategy.position_size < 0 and not na(activeShortRisk) and not na(activeShortStop)
+    shortEntryPrice = strategy.position_avg_price
+    shortBEPrice    = shortEntryPrice - activeShortRisk * beTriggerR
+    shortTPPrice    = shortEntryPrice - activeShortRisk * rrMultiple
+    shortLockPrice  = shortEntryPrice - activeShortRisk * beLockR
+
+    if not shortBETriggered and low <= shortBEPrice
+        shortBETriggered := true
+
+    currentShortStop = shortBETriggered ? shortLockPrice : activeShortStop
+
+    strategy.exit("Short Exit", from_entry="Short", stop=currentShortStop, limit=shortTPPrice)
+    strategy.exit("ShortLimitAfterRespect Exit", from_entry="ShortLimitAfterRespect", stop=currentShortStop, limit=shortTPPrice)
+    strategy.exit("Short Rev Exit", from_entry="Short Rev", stop=currentShortStop, limit=shortTPPrice)
+    strategy.exit("Short Rev Mkt Exit", from_entry="Short Rev Mkt", stop=currentShortStop, limit=shortTPPrice)
+
+// =========================
+// Cleanup after flat
+// =========================
+if strategy.position_size == 0
+    activeLongStop := na
+    activeLongRisk := na
+    longBETriggered := false
+
+    activeShortStop := na
+    activeShortRisk := na
+    shortBETriggered := false
+
+// =========================
+// Cancel all pending orders after 12:00 NY if flat
+// =========================
+if afterNoon and strategy.position_size == 0
+    strategy.cancel("LongLimitAfterRespect")
+    strategy.cancel("ShortLimitAfterRespect")
+    strategy.cancel("Short Rev")
+    strategy.cancel("Long Rev")
+    pendingLimitAfterRespect := false
+    pendingReverse := false
+
+// =========================
+// Plots
+// =========================
+plot(showLines and rangeReady ? rangeHigh : na, "Range High", color=color.green, linewidth=2, style=plot.style_linebr)
+plot(showLines and rangeReady ? rangeLow  : na, "Range Low",  color=color.red, linewidth=2, style=plot.style_linebr)
+
+plotshape(longBreak,  title="Long Break",  style=shape.triangleup,   location=location.belowbar, color=color.green,  size=size.tiny, text="LB")
+plotshape(shortBreak, title="Short Break", style=shape.triangledown, location=location.abovebar, color=color.red,    size=size.tiny, text="SB")
+
+plotshape(longRetest,  title="Long First Retest",  style=shape.circle, location=location.belowbar, color=color.lime,   size=size.tiny, text="LR")
+plotshape(shortRetest, title="Short First Retest", style=shape.circle, location=location.abovebar, color=color.orange, size=size.tiny, text="SR")
+
+// =========================
+// Timeframe warning
+// =========================
+var label tfWarn = na
+if not is5m and barstate.islast
+    if na(tfWarn)
+        tfWarn := label.new(bar_index, high, "请切换到 5min 图使用", style=label.style_label_down, textcolor=color.white, color=color.orange)
+    else
+        label.set_x(tfWarn, bar_index)
+        label.set_y(tfWarn, high)
