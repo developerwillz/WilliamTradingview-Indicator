@@ -9,8 +9,7 @@ strategy("5m ORB First Retest - Final Clean Version (NY Time)", overlay=true, in
 // =========================
 showLines       = input.bool(true, "Show range high/low")
 rrMultiple      = input.float(3.0, "Take Profit (R)", minval=0.1, step=0.1)
-beTriggerR      = input.float(2.0, "BE trigger (R)", minval=0.1, step=0.1)
-beLockR         = input.float(0.5, "BE lock profit (R)", minval=0.0, step=0.1)
+beTriggerR      = input.float(2.0, "Break-even trigger (R)", minval=0.1, step=0.1)
 useChaseFilter  = input.bool(true, "Use chase filter")
 chaseRatio      = input.float(0.9, "No-chase threshold", minval=0.1, step=0.05)
 tolerancePts    = input.float(5.0, "Respect tolerance (points)", minval=0)
@@ -287,12 +286,11 @@ if strategy.position_size > 0 and not na(activeLongRisk) and not na(activeLongSt
     longEntryPrice = strategy.position_avg_price
     longBEPrice    = longEntryPrice + activeLongRisk * beTriggerR
     longTPPrice    = longEntryPrice + activeLongRisk * rrMultiple
-    longLockPrice  = longEntryPrice + activeLongRisk * beLockR
 
     if not longBETriggered and high >= longBEPrice
         longBETriggered := true
 
-    currentLongStop = longBETriggered ? longLockPrice : activeLongStop
+    currentLongStop = longBETriggered ? longEntryPrice : activeLongStop
 
     strategy.exit("Long Exit", from_entry="Long", stop=currentLongStop, limit=longTPPrice)
     strategy.exit("LongLimitAfterRespect Exit", from_entry="LongLimitAfterRespect", stop=currentLongStop, limit=longTPPrice)
@@ -303,12 +301,11 @@ if strategy.position_size < 0 and not na(activeShortRisk) and not na(activeShort
     shortEntryPrice = strategy.position_avg_price
     shortBEPrice    = shortEntryPrice - activeShortRisk * beTriggerR
     shortTPPrice    = shortEntryPrice - activeShortRisk * rrMultiple
-    shortLockPrice  = shortEntryPrice - activeShortRisk * beLockR
 
     if not shortBETriggered and low <= shortBEPrice
         shortBETriggered := true
 
-    currentShortStop = shortBETriggered ? shortLockPrice : activeShortStop
+    currentShortStop = shortBETriggered ? shortEntryPrice : activeShortStop
 
     strategy.exit("Short Exit", from_entry="Short", stop=currentShortStop, limit=shortTPPrice)
     strategy.exit("ShortLimitAfterRespect Exit", from_entry="ShortLimitAfterRespect", stop=currentShortStop, limit=shortTPPrice)
