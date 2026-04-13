@@ -1,0 +1,151 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CleverWilliy
+
+//@version=6
+strategy("5m ORB Retest Limit Entry (NY Time)", overlay=true, initial_capital=100000, pyramiding=0, process_orders_on_close=true)
+
+// ===== 参数 =====
+showLines  = input.bool(true, "Show range high/low")
+rrMultiple = input.float(2.0, "Take Profit (R)", minval=0.1, step=0.1)
+
+// ===== 常量 =====
+nyTZ = "America/New_York"
+
+// ===== 只建议在5分钟图使用 =====
+is5m = timeframe.isminutes and timeframe.multiplier == 5
+
+// ===== 纽约时间下的小时/分钟 =====
+nyHour   = hour(time, nyTZ)
+nyMinute = minute(time, nyTZ)
+
+// 把时间转成“分钟数”，便于比较
+nyTotalMin = nyHour * 60 + nyMinute
+
+// ===== 纽约时间窗口 =====
+// 9:30 = 570
+// 10:30 = 630
+// 12:00 = 720
+inRangeSession = nyTotalMin >= 570 and nyTotalMin <= 630
+inTradeSession = nyTotalMin > 630 and nyTotalMin < 720
+afterNoon      = nyTotalMin >= 720
+
+// ===== 按纽约日期判断新的一天 =====
+nyYear  = year(time, nyTZ)
+nyMonth = month(time, nyTZ)
+nyDay   = dayofmonth(time, nyTZ)
+
+nyDate = nyYear * 10000 + nyMonth * 100 + nyDay
+newDay = ta.change(nyDate) != 0
+
+// ===== 变量 =====
+var float rangeHigh = na
+var float rangeLow  = na
+
+var bool rangeReady = false
+var bool orderPlacedToday = false
+var bool pendingLong = false
+var bool pendingShort = false
+var bool tradeTakenToday = false
+
+var float longEntry = na
+var float longStop  = na
+var float longTP    = na
+
+var float shortEntry = na
+var float shortStop  = na
+var float shortTP    = na
+
+// ===== 每日重置 =====
+if newDay
+    rangeHigh := na
+    rangeLow := na
+    rangeReady := false
+    orderPlacedToday := false
+    pendingLong := false
+    pendingShort := false
+    tradeTakenToday := false
+
+    longEntry := na
+    longStop := na
+    longTP := na
+
+    shortEntry := na
+    shortStop := na
+    shortTP := na
+
+    strategy.cancel("Long")
+    strategy.cancel("Short")
+
+// ===== 统计纽约时间 9:30-10:30 高低点 =====
+if is5m and inRangeSession
+    rangeHigh := na(rangeHigh) ? high : math.max(rangeHigh, high)
+    rangeLow  := na(rangeLow)  ? low  : math.min(rangeLow, low)
+
+// ===== 10:30 后区间完成 =====
+if is5m and not inRangeSession and not na(rangeHigh) and not na(rangeLow)
+    rangeReady := true
+
+// ===== 突破信号 =====
+longBreak  = is5m and rangeReady and inTradeSession and not orderPlacedToday and not tradeTakenToday and close > rangeHigh
+shortBreak = is5m and rangeReady and inTradeSession and not orderPlacedToday and not tradeTakenToday and close < rangeLow
+
+// ===== 突破后挂回踩限价单 =====
+if longBreak
+    longEntry := rangeHigh
+    longStop  := low
+    risk = longEntry - longStop
+    if risk > 0
+        longTP := longEntry + risk * rrMultiple
+        strategy.entry("Long", strategy.long, limit=longEntry)
+        strategy.exit("Long Exit", from_entry="Long", stop=longStop, limit=longTP)
+        orderPlacedToday := true
+        pendingLong := true
+        pendingShort := false
+
+if shortBreak
+    shortEntry := rangeLow
+    shortStop  := high
+    risk = shortStop - shortEntry
+    if risk > 0
+        shortTP := shortEntry - risk * rrMultiple
+        strategy.entry("Short", strategy.short, limit=shortEntry)
+        strategy.exit("Short Exit", from_entry="Short", stop=shortStop, limit=shortTP)
+        orderPlacedToday := true
+        pendingShort := true
+        pendingLong := false
+
+// ===== 检查是否成交 =====
+if pendingLong and strategy.position_size > 0
+    pendingLong := false
+    tradeTakenToday := true
+
+if pendingShort and strategy.position_size < 0
+    pendingShort := false
+    tradeTakenToday := true
+
+// ===== 纽约时间 12:00 后未成交则撤单 =====
+if is5m and afterNoon
+    if pendingLong and strategy.position_size == 0
+        strategy.cancel("Long")
+        pendingLong := false
+
+    if pendingShort and strategy.position_size == 0
+        strategy.cancel("Short")
+        pendingShort := false
+
+// ===== 画线 =====
+plot(showLines and rangeReady ? rangeHigh : na, "Range High", color=color.green, linewidth=2, style=plot.style_linebr)
+plot(showLines and rangeReady ? rangeLow  : na, "Range Low",  color=color.red, linewidth=2, style=plot.style_linebr)
+
+// ===== 突破标记 =====
+plotshape(longBreak,  title="Long Break",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.tiny, text="LB")
+plotshape(shortBreak, title="Short Break", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.tiny, text="SB")
+
+// ===== 非5分钟提示：只显示一次 =====
+var label tfWarn = na
+if not is5m and barstate.islast
+    if na(tfWarn)
+        tfWarn := label.new(bar_index, high, "请切换到 5min 图使用", style=label.style_label_down, textcolor=color.white, color=color.orange)
+    else
+        label.set_x(tfWarn, bar_index)
+        label.set_y(tfWarn, high)
