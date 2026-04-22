@@ -11,7 +11,7 @@ showOnlyTargetTF = input.bool(true, "Only show main HTF model on 5m / 15m / 1H")
 
 zoneColor        = input.color(color.new(color.gray, 85), "Zone fill color")
 
-vlineColor       = input.color(color.new(color.black, 0), "Divider color")
+vlineColor       = input.color(color.new(color.gray, 42), "Divider color")
 vlineWidth       = input.int(1, "Divider width", minval=1, maxval=4)
 keepLines        = input.int(200, "Keep last N dividers", minval=20, maxval=500)
 
@@ -24,6 +24,8 @@ nextLineStyleStr = input.string("Dashed", "Next divider style", options=["Solid"
 showPrev4HHL     = input.bool(true, "Show previous 4H High/Low on 15m")
 hlLineColor      = input.color(color.orange, "Prev 4H H/L color")
 hlLineWidth      = input.int(1, "Prev 4H H/L width", minval=1, maxval=4)
+show4HLabel    = input.bool(true, "Show 4H labels on 15m")
+label4HText    = input.string("4H", "4H label text")
 
 // ===== Intraday: previous Daily high/low =====
 showPrevDHL      = input.bool(true, "Show previous Daily High/Low on 5m / 15m / 1H / 4H")
@@ -128,6 +130,8 @@ var line[] divLines = array.new_line()
 
 var line prev4HHighLine = na
 var line prev4HLowLine  = na
+var label prev4HHighLabel = na
+var label prev4HLowLabel  = na
 
 var line nextDividerLine = na
 
@@ -346,14 +350,59 @@ if newHTF and not na(prevHTFMid)
              extend=extend.none,
              color=prev4HLowSwept  ? sweptLowColor  : hlLineColor,
              width=hlLineWidth)
+        if show4HLabel
+            if na(prev4HHighLabel)
+                prev4HHighLabel := label.new(
+                     rightX, prevHTFHigh, label4HText,
+                     xloc=xloc.bar_index,
+                     style=label.style_label_left,
+                     textcolor=color.white,
+                     color=prev4HHighSwept ? sweptHighColor : hlLineColor,
+                     size=size.tiny)
+            else
+                label.set_x(prev4HHighLabel, rightX)
+                label.set_y(prev4HHighLabel, prevHTFHigh)
+                label.set_text(prev4HHighLabel, label4HText)
+                label.set_textcolor(prev4HHighLabel, color.white)
+                label.set_color(prev4HHighLabel, prev4HHighSwept ? sweptHighColor : hlLineColor)
+                label.set_style(prev4HHighLabel, label.style_label_left)
+                label.set_size(prev4HHighLabel, size.tiny)
+
+            if na(prev4HLowLabel)
+                prev4HLowLabel := label.new(
+                     rightX, prevHTFLow, label4HText,
+                     xloc=xloc.bar_index,
+                     style=label.style_label_left,
+                     textcolor=color.white,
+                     color=prev4HLowSwept ? sweptLowColor : hlLineColor,
+                     size=size.tiny)
+            else
+                label.set_x(prev4HLowLabel, rightX)
+                label.set_y(prev4HLowLabel, prevHTFLow)
+                label.set_text(prev4HLowLabel, label4HText)
+                label.set_textcolor(prev4HLowLabel, color.white)
+                label.set_color(prev4HLowLabel, prev4HLowSwept ? sweptLowColor : hlLineColor)
+                label.set_style(prev4HLowLabel, label.style_label_left)
+                label.set_size(prev4HLowLabel, size.tiny)
+        else
+            if not na(prev4HHighLabel)
+                label.delete(prev4HHighLabel)
+                prev4HHighLabel := na
+            if not na(prev4HLowLabel)
+                label.delete(prev4HLowLabel)
+                prev4HLowLabel := na
 if enableSweepColorChange and is15m and showPrev4HHL
     if not prev4HHighSwept and not na(prev4HHighLine) and high > prevHTFHigh
         prev4HHighSwept := true
         line.set_color(prev4HHighLine, sweptHighColor)
+        if not na(prev4HHighLabel)
+            label.set_color(prev4HHighLabel, sweptHighColor)
 
     if not prev4HLowSwept and not na(prev4HLowLine) and low < prevHTFLow
         prev4HLowSwept := true
         line.set_color(prev4HLowLine, sweptLowColor)
+        if not na(prev4HLowLabel)
+            label.set_color(prev4HLowLabel, sweptLowColor)
 
 // =====================================================
 // Hide 15m-only 4H H/L lines when needed
@@ -366,7 +415,14 @@ if (not is15m) or (is15m and not showPrev4HHL)
     if not na(prev4HLowLine)
         line.delete(prev4HLowLine)
         prev4HLowLine := na
-        prev4HLowSwept  := false
+        prev4HLowSwept := false
+
+    if not na(prev4HHighLabel)
+        label.delete(prev4HHighLabel)
+        prev4HHighLabel := na
+    if not na(prev4HLowLabel)
+        label.delete(prev4HLowLabel)
+        prev4HLowLabel := na
 
 // =====================================================
 // Intraday charts: previous Daily High / Low
